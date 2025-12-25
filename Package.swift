@@ -27,6 +27,7 @@ let package = Package(
                 "zstd/lib/README.md",
                 "zstd/lib/libzstd.mk",
                 "zstd/lib/libzstd.pc.in",
+                "zstd/lib/module.modulemap",
                 "zstd/lib/dll",
                 "zstd/lib/deprecated",
                 "zstd/lib/legacy",
