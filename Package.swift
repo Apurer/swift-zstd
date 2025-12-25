@@ -38,6 +38,8 @@ let package = Package(
                 .define("ZSTD_STATIC_LINKING_ONLY", to: "1"),
                 .define("ZDICT_STATIC_LINKING_ONLY", to: "1"),
                 .define("ZSTD_LEGACY_SUPPORT", to: "0"),
+                // Make the bundled libzstd module map visible so the CZstd PCM can resolve `libzstd`.
+                .headerSearchPath("zstd/lib"),
             ]
         ),
         .target(
