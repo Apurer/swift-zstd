@@ -3,6 +3,7 @@ import CZstd
 
 public enum Zstd {
     public static let defaultCompressionLevel: Int32 = Int32(ZSTD_CLEVEL_DEFAULT)
+    public static let defaultMaxDecompressedSize: Int = 64 * 1024 * 1024
 
     public struct CompressionOptions: Sendable {
         public var level: Int32
@@ -38,7 +39,7 @@ public enum Zstd {
 
         public init(
             dictionary: Dictionary? = nil,
-            maxDecompressedSize: Int? = nil
+            maxDecompressedSize: Int? = Zstd.defaultMaxDecompressedSize
         ) {
             self.dictionary = dictionary
             self.maxDecompressedSize = maxDecompressedSize

@@ -35,9 +35,14 @@ let package = Package(
             sources: ["zstd/lib"],
             publicHeadersPath: "include",
             cSettings: [
+                .define("ZSTD_MULTITHREAD", .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .linux])),
                 .define("ZSTD_STATIC_LINKING_ONLY", to: "1"),
                 .define("ZDICT_STATIC_LINKING_ONLY", to: "1"),
                 .define("ZSTD_LEGACY_SUPPORT", to: "0"),
+                .unsafeFlags(["-pthread"], .when(platforms: [.linux])),
+            ],
+            linkerSettings: [
+                .linkedLibrary("pthread", .when(platforms: [.linux])),
             ]
         ),
         .target(

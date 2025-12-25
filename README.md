@@ -44,8 +44,8 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
   ```
 
 ## Tuning & safety
-- Options expose checksum, window log, worker threads, and `includeDictionaryID` (ZSTD_c_dictIDFlag).
-- `maxOutputSize` (compression) and `maxDecompressedSize` (decompression) guard untrusted or enormous inputs; overshoots throw `outputLimitExceeded`.
+- Options expose checksum, window log, worker threads, and `includeDictionaryID` (ZSTD_c_dictIDFlag). Multi-threaded compression is compiled in; set `threads` > 0 to enable worker threads.
+- `maxOutputSize` (compression) and `maxDecompressedSize` (decompression) guard untrusted or enormous inputs; overshoots throw `outputLimitExceeded`. Decompression defaults to a 64MB cap; pass `maxDecompressedSize: nil` (or a larger value) if you trust the payload and need more.
 - Allocations are bounded using `ZSTD_compressBound`/`ZSTD_*StreamOutSize` with explicit `Int.max` checks before buffers are created.
 - Empty frames round-trip correctly; invalid or truncated frames throw `invalidFrame`.
 - Prefer streaming APIs for large payloads to reuse contexts and avoid building whole messages in memory.

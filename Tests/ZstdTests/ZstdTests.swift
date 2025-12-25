@@ -48,6 +48,52 @@ import Testing
     }
 }
 
+@Test func multithreadedCompressionEnabled() throws {
+    let payload = Data(repeating: 0x55, count: 1 << 20)
+    let compressed = try Zstd.compress(payload, options: .init(threads: 2))
+    let decompressed = try Zstd.decompress(compressed)
+
+    #expect(decompressed == payload)
+}
+
+@Test func defaultDecompressLimitAppliesToKnownSizeFrames() throws {
+    let targetSize = Zstd.defaultMaxDecompressedSize + 4 * 1024
+    let payload = Data(repeating: 0xEF, count: targetSize)
+    let compressed = try Zstd.compress(payload)
+
+    #expect(throws: Zstd.ZstdError.outputLimitExceeded) {
+        _ = try Zstd.decompress(compressed)
+    }
+
+    let decompressed = try Zstd.decompress(compressed, options: .init(maxDecompressedSize: targetSize))
+    #expect(decompressed == payload)
+}
+
+@Test func defaultDecompressLimitAppliesToStreamingFrames() async throws {
+    let targetSize = Zstd.defaultMaxDecompressedSize + 8 * 1024
+    let payload = Data(repeating: 0x42, count: targetSize)
+
+    let compressor = try Zstd.Compressor()
+    var compressed = Data()
+    for chunk in chunkData(payload, size: 32_768) {
+        compressed.append(try compressor.compress(chunk))
+    }
+    compressed.append(try compressor.finish())
+
+    let stream = Zstd.decompress(chunks: asyncChunks(compressed, size: 8_192))
+
+    var hitLimit = false
+    do {
+        for try await _ in stream {}
+    } catch let error as Zstd.ZstdError {
+        if case .outputLimitExceeded = error {
+            hitLimit = true
+        }
+    } catch {}
+
+    #expect(hitLimit)
+}
+
 @Test func streamingUnknownSizeRoundTrip() async throws {
     let payload = Data((0..<64_000).map { UInt8($0 & 0xFF) })
 
