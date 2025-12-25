@@ -2,3 +2,10 @@ module CZstd {
     header "shim.h"
     export *
 }
+
+module libzstd {
+    header "../zstd/lib/zstd.h"
+    header "../zstd/lib/zdict.h"
+    header "../zstd/lib/zstd_errors.h"
+    export *
+}
