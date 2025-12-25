@@ -3,7 +3,7 @@ module CZstd {
     export *
 }
 
-module libzstd {
+module libzstd [extern_c] {
     header "../zstd/lib/zstd.h"
     header "../zstd/lib/zdict.h"
     header "../zstd/lib/zstd_errors.h"
