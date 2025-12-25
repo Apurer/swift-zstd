@@ -53,5 +53,8 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
 ## CI
 GitHub Actions runs `swift test` on macOS and Linux to keep the bundled C target building.
 
+## Development
+- This repo vendors Zstandard as a git submodule. Clone with `git clone --recurse-submodules` (or run `git submodule update --init --recursive`) before building or running tests.
+
 ## License
 The bundled Zstandard sources are licensed under the BSD 3-Clause license (see `LICENSE`).
