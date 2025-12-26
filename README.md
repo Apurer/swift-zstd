@@ -15,17 +15,17 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
   var scratch = Data()
   for chunk in someChunks {
       scratch.removeAll(keepingCapacity: true)
-  try compressor.compress(chunk, into: &scratch)
+      try compressor.compress(chunk, into: &scratch)
+      output.append(scratch)
+  }
+  scratch.removeAll(keepingCapacity: true)
+  let flushed = try compressor.flush() // optional checkpoint without closing the frame
+  output.append(flushed)
+  try compressor.finish(into: &scratch)
   output.append(scratch)
-}
-scratch.removeAll(keepingCapacity: true)
-let flushed = try compressor.flush() // optional checkpoint without closing the frame
-output.append(flushed)
-try compressor.finish(into: &scratch)
-output.append(scratch)
 
-let decompressor = try Zstd.Decompressor(options: .init(maxDecompressedSize: 1 << 24))
-var restored = Data()
+  let decompressor = try Zstd.Decompressor(options: .init(maxDecompressedSize: 1 << 24))
+  var restored = Data()
   for chunk in outputChunks {
       let finished = try decompressor.decompress(chunk, into: &restored)
       if finished { break }
