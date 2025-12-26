@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Apurer/swift-zstd/actions/workflows/ci.yml/badge.svg)](https://github.com/Apurer/swift-zstd/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Apurer/swift-zstd?display_name=tag)](https://github.com/Apurer/swift-zstd/releases)
-[![Docs](https://img.shields.io/badge/docs-DocC-blue)](https://apurer.github.io/swift-zstd/documentation/swift_zstd)
+[![Docs](https://img.shields.io/badge/docs-DocC-blue)](https://apurer.github.io/swift-zstd/documentation/zstd)
 
 Swift package that embeds the Zstandard C library and exposes allocation-aware one-shot, streaming, async sequence, and `FileHandle` APIs tailored for Swift.
 
@@ -77,7 +77,7 @@ git submodule update --init --recursive
 
 ## Documentation
 - Swift-DocC is enabled. Generate local docs with `swift package generate-documentation` (requires the DocC plugin).
-- Planned published docs: https://apurer.github.io/swift-zstd/documentation/swift_zstd
+- Planned published docs: https://apurer.github.io/swift-zstd/documentation/zstd
 - Narrative guides live under `Sources/Zstd/Documentation.docc` (getting started, streaming vs one-shot, safety limits, dictionary usage).
 
 ## Benchmarks and compatibility
