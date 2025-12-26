@@ -1,21 +1,29 @@
 name: Docs
+
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main]
   workflow_dispatch:
+
 permissions:
   contents: read
   pages: write
   id-token: write
-concurrency: { group: "pages", cancel-in-progress: true }
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: recursive }
+        with:
+          submodules: recursive
       - uses: swift-actions/setup-swift@v2
-        with: { swift-version: "6.2" }
+        with:
+          swift-version: "6.2"
       - name: Generate DocC
         run: |
           swift package --allow-writing-to-directory .build/documentation \
@@ -25,7 +33,9 @@ jobs:
             --hosting-base-path swift-zstd
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
-        with: { path: .build/documentation }
+        with:
+          path: .build/documentation
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
