@@ -15,15 +15,17 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
   var scratch = Data()
   for chunk in someChunks {
       scratch.removeAll(keepingCapacity: true)
-      try compressor.compress(chunk, into: &scratch)
-      output.append(scratch)
-  }
-  scratch.removeAll(keepingCapacity: true)
-  try compressor.finish(into: &scratch)
+  try compressor.compress(chunk, into: &scratch)
   output.append(scratch)
+}
+scratch.removeAll(keepingCapacity: true)
+let flushed = try compressor.flush() // optional checkpoint without closing the frame
+output.append(flushed)
+try compressor.finish(into: &scratch)
+output.append(scratch)
 
-  let decompressor = try Zstd.Decompressor(options: .init(maxDecompressedSize: 1 << 24))
-  var restored = Data()
+let decompressor = try Zstd.Decompressor(options: .init(maxDecompressedSize: 1 << 24))
+var restored = Data()
   for chunk in outputChunks {
       let finished = try decompressor.decompress(chunk, into: &restored)
       if finished { break }
@@ -53,9 +55,11 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
   ```
 
 ## Tuning & safety
-- Options expose checksum, window log, worker threads, `includeDictionaryID` (ZSTD_c_dictIDFlag), and `maxWindowLog` for decompression. Multi-threaded compression is compiled in; set `threads` > 0 to enable worker threads.
+- Compression options include checksum, content size flag, window log, worker threads + `jobSize`, long-distance matching, target length, strategy, dictionary ID flag, and dictionary support. Multi-threaded compression is compiled in; set `threads` > 0 to enable worker threads and optionally tune `jobSize`.
+- Decompression options include dictionary binding, `maxDecompressedSize` (default 16MB), and `maxWindowLog`.
 - When a dictionary is provided and `includeDictionaryID` is not set, the encoder defaults to including the dictionary ID so decoders can reject mismatches; set it to `false` explicitly if you need to omit it.
 - `maxOutputSize` (compression) and `maxDecompressedSize` (decompression) guard untrusted or enormous inputs; overshoots throw `outputLimitExceeded`. Decompression defaults to a 16MB cap; pass `maxDecompressedSize: nil` (or a larger value) if you trust the payload and need more, or cap the sliding window with `maxWindowLog` for untrusted streams.
+- Finished streaming contexts now throw `streamFinished` if reused; call `reset` to reuse after `finish()`.
 - Known-size frames are decompressed eagerly up to 64MB; larger advertised sizes fall back to the streaming path to avoid a single huge allocation even when the frame reports its size.
 - Allocations are bounded using `ZSTD_compressBound`/`ZSTD_*StreamOutSize` with explicit `Int.max` checks before buffers are created.
 - Empty frames round-trip correctly; invalid or truncated frames throw `invalidFrame`.
