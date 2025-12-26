@@ -1,0 +1,9 @@
+{
+  "maximumLineLength": 120,
+  "indentation": {
+    "spaces": 4
+  },
+  "lineBreakBeforeEachArgument": false,
+  "lineBreakBeforeEachGenericRequirement": false,
+  "respectsExistingLineBreaks": true
+}

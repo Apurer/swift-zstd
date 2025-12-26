@@ -16,6 +16,13 @@ let package = Package(
             name: "Zstd",
             targets: ["Zstd"]
         ),
+        .executable(
+            name: "Benchmarks",
+            targets: ["Benchmarks"]
+        ),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.3.0"),
     ],
     targets: [
         .target(
@@ -49,6 +56,10 @@ let package = Package(
         .target(
             name: "Zstd",
             dependencies: ["CZstd"]
+        ),
+        .executableTarget(
+            name: "Benchmarks",
+            dependencies: ["Zstd"]
         ),
         .testTarget(
             name: "ZstdTests",
