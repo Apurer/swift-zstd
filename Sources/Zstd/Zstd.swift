@@ -1,25 +1,64 @@
 import Foundation
 import CZstd
 
+/// Swift conveniences for zstd compression and decompression.
 public enum Zstd {
+    /// Default compression level provided by libzstd.
     public static let defaultCompressionLevel: Int32 = Int32(ZSTD_CLEVEL_DEFAULT)
+    /// Default cap for one-shot decompressions and async streams (16 MB).
     public static let defaultMaxDecompressedSize: Int = 16 * 1024 * 1024
     private static let maxSingleShotDecompressionSize: Int = 64 * 1024 * 1024
 
+    /// Compression strategy presets from fastest to strongest.
+    public enum CompressionStrategy: Int32, Sendable {
+        case fast = 1
+        case dfast = 2
+        case greedy = 3
+        case lazy = 4
+        case lazy2 = 5
+        case btlazy2 = 6
+        case btopt = 7
+        case btultra = 8
+        case btultra2 = 9
+    }
+
+    /// Options to tune streaming and one-shot compression.
     public struct CompressionOptions: Sendable {
+        /// Compression level to apply (defaults to zstd's preset).
         public var level: Int32
+        /// When true, emits a checksum for each frame.
         public var checksum: Bool
+        /// Override whether the dictionary ID is written to the frame (defaults to auto when a dictionary is used).
         public var includeDictionaryID: Bool?
+        /// Override whether the original content size is written to the frame header (nil keeps libzstd's default of writing when known).
+        public var contentSize: Bool?
+        /// Enable or disable long-distance matching (nil keeps libzstd's automatic behavior based on window size).
+        public var longDistanceMatching: Bool?
+        /// Target match length that influences greedy/lazy strategies (defaults to the level/strategy preset).
+        public var targetLength: Int?
+        /// Compression strategy to use instead of the preset associated with `level`.
+        public var strategy: CompressionStrategy?
+        /// Number of worker threads to use (nil keeps compression single-threaded).
         public var threads: Int?
+        /// Job size to schedule when `threads` is set (bytes per worker task).
+        public var jobSize: Int?
+        /// Maximum back-reference distance expressed as a log2 window size.
         public var windowLog: Int?
+        /// Pre-trained dictionary to reference for compression.
         public var dictionary: Dictionary?
+        /// Hard limit on the number of compressed bytes this compressor may emit.
         public var maxOutputSize: Int?
 
         public init(
             level: Int32 = Zstd.defaultCompressionLevel,
             checksum: Bool = false,
             includeDictionaryID: Bool? = nil,
+            contentSize: Bool? = nil,
+            longDistanceMatching: Bool? = nil,
+            targetLength: Int? = nil,
+            strategy: CompressionStrategy? = nil,
             threads: Int? = nil,
+            jobSize: Int? = nil,
             windowLog: Int? = nil,
             dictionary: Dictionary? = nil,
             maxOutputSize: Int? = nil
@@ -27,16 +66,25 @@ public enum Zstd {
             self.level = level
             self.checksum = checksum
             self.includeDictionaryID = includeDictionaryID
+            self.contentSize = contentSize
+            self.longDistanceMatching = longDistanceMatching
+            self.targetLength = targetLength
+            self.strategy = strategy
             self.threads = threads
+            self.jobSize = jobSize
             self.windowLog = windowLog
             self.dictionary = dictionary
             self.maxOutputSize = maxOutputSize
         }
     }
 
+    /// Options to tune streaming and one-shot decompression.
     public struct DecompressionOptions: Sendable {
+        /// Pre-trained dictionary required to decode matching frames.
         public var dictionary: Dictionary?
+        /// Maximum allowed decompressed bytes; defaults to 16 MB for safety.
         public var maxDecompressedSize: Int?
+        /// Upper bound on the allowed window log for streamed frames (10...30 on 32-bit, 10...31 on 64-bit).
         public var maxWindowLog: Int?
 
         public init(
@@ -50,11 +98,18 @@ public enum Zstd {
         }
     }
 
+    /// Errors surfaced by Zstd operations.
     public enum ZstdError: Error, CustomStringConvertible {
+        /// libzstd reported an error code; the message is provided for debugging.
         case library(code: Int, message: String)
+        /// Input was empty or not a valid zstd frame.
         case invalidFrame
+        /// Produced output would exceed a configured limit.
         case outputLimitExceeded
+        /// The requested frame exceeds what can be handled on this platform.
         case frameTooLarge
+        /// The stream has already been finished; call `reset` to reuse.
+        case streamFinished
 
         public var description: String {
             switch self {
@@ -66,14 +121,18 @@ public enum Zstd {
                 return "decompressed data exceeds allowed limit"
             case .frameTooLarge:
                 return "frame size is too large for this platform"
+            case .streamFinished:
+                return "stream has already been finished"
             }
         }
     }
 
+    /// Pre-trained dictionary shared between compression and decompression.
     public final class Dictionary {
         fileprivate let compress: OpaquePointer
         fileprivate let decompress: OpaquePointer
 
+        /// Creates a compression and decompression dictionary from raw bytes.
         public init(data: Data, level: Int32 = Zstd.defaultCompressionLevel) throws {
             let compressHandle = data.withUnsafeBytes { buffer in
                 ZSTD_createCDict(buffer.baseAddress, data.count, level)
@@ -91,6 +150,7 @@ public enum Zstd {
             self.decompress = decompressHandle
         }
 
+        /// Loads a dictionary from disk.
         public convenience init(contentsOf url: URL, level: Int32 = Zstd.defaultCompressionLevel) throws {
             let data = try Data(contentsOf: url)
             try self.init(data: data, level: level)
@@ -102,6 +162,7 @@ public enum Zstd {
         }
     }
 
+    /// Streaming compressor that can be reused across payloads. Calls to `compress`, `flush`, or `finish` after completion throw `.streamFinished`.
     public final class Compressor {
         private let context: OpaquePointer
         private var scratch: [UInt8]
@@ -110,6 +171,7 @@ public enum Zstd {
         private var produced = 0
         private var options: CompressionOptions
 
+        /// Creates a compressor configured with the provided options.
         public init(options: CompressionOptions = CompressionOptions()) throws {
             guard let context = ZSTD_createCCtx() else {
                 throw ZstdError.library(code: -1, message: "Unable to create compression context")
@@ -135,12 +197,14 @@ public enum Zstd {
             }
         }
 
+        /// Indicates whether `finish()` has been called. When true, further writes throw `.streamFinished` until `reset` is invoked.
         public var isFinished: Bool { finished }
 
         deinit {
             ZSTD_freeCCtx(context)
         }
 
+        /// Resets the stream and reapplies the provided options.
         public func reset(options: CompressionOptions? = nil) throws {
             let nextOptions = options ?? self.options
             _ = try Zstd.validate(code: Int(ZSTD_CCtx_reset(context, ZSTD_reset_session_and_parameters)))
@@ -154,17 +218,16 @@ public enum Zstd {
             self.produced = 0
         }
 
+        /// Compresses a buffer and returns the resulting frame bytes.
         public func compress(_ data: Data) throws -> Data {
-            guard !finished else { return Data() }
-
             var output = Data()
-            reserveCompressedCapacity(for: data.count, into: &output)
             try compress(data, into: &output)
             return output
         }
 
+        /// Compresses a buffer and appends the output into `output`.
         public func compress(_ data: Data, into output: inout Data) throws {
-            guard !finished else { return }
+            try ensureOpen()
 
             reserveCompressedCapacity(for: data.count, into: &output)
             try compress(data, writingTo: { buffer in
@@ -172,11 +235,12 @@ public enum Zstd {
             })
         }
 
+        /// Compresses a buffer and forwards chunks to `sink`.
         public func compress(
             _ data: Data,
             writingTo sink: (UnsafeRawBufferPointer) throws -> Void
         ) throws {
-            guard !finished else { return }
+            try ensureOpen()
 
             try data.withUnsafeBytes { srcBuffer in
                 var input = ZSTD_inBuffer(src: srcBuffer.baseAddress, size: srcBuffer.count, pos: 0)
@@ -203,17 +267,39 @@ public enum Zstd {
             }
         }
 
-        public func finish() throws -> Data {
-            guard !finished else { return Data() }
-
+        /// Flushes any buffered input without closing the frame.
+        public func flush() throws -> Data {
             var output = Data()
+            try flush(into: &output)
+            return output
+        }
+
+        /// Flushes buffered input into `output` without closing the frame.
+        public func flush(into output: inout Data) throws {
+            try ensureOpen()
+
             Zstd.reserveCapacity(for: &output, additional: scratch.count)
+            try flush(writingTo: { buffer in
+                output.append(contentsOf: buffer)
+            })
+        }
+
+        /// Flushes buffered input to `sink` without closing the frame.
+        public func flush(writingTo sink: (UnsafeRawBufferPointer) throws -> Void) throws {
+            try ensureOpen()
+            try drain(endDirective: ZSTD_e_flush, markFinished: false, writingTo: sink)
+        }
+
+        /// Finalizes the frame and returns any remaining output.
+        public func finish() throws -> Data {
+            var output = Data()
             try finish(into: &output)
             return output
         }
 
+        /// Finalizes the frame and appends any remaining output into `output`.
         public func finish(into output: inout Data) throws {
-            guard !finished else { return }
+            try ensureOpen()
 
             Zstd.reserveCapacity(for: &output, additional: scratch.count)
             try finish(writingTo: { buffer in
@@ -221,9 +307,17 @@ public enum Zstd {
             })
         }
 
+        /// Finalizes the frame and forwards remaining output to `sink`.
         public func finish(writingTo sink: (UnsafeRawBufferPointer) throws -> Void) throws {
-            guard !finished else { return }
+            try ensureOpen()
+            try drain(endDirective: ZSTD_e_end, markFinished: true, writingTo: sink)
+        }
 
+        private func drain(
+            endDirective: ZSTD_EndDirective,
+            markFinished: Bool,
+            writingTo sink: (UnsafeRawBufferPointer) throws -> Void
+        ) throws {
             var input = ZSTD_inBuffer(src: nil, size: 0, pos: 0)
 
             try scratch.withUnsafeMutableBytes { scratchBuffer in
@@ -231,7 +325,7 @@ public enum Zstd {
 
                 while true {
                     var out = ZSTD_outBuffer(dst: scratchBase, size: scratchBuffer.count, pos: 0)
-                    let code = ZSTD_compressStream2(context, &out, &input, ZSTD_e_end)
+                    let code = ZSTD_compressStream2(context, &out, &input, endDirective)
                     _ = try Zstd.validate(code: Int(code))
 
                     if out.pos > 0 {
@@ -246,7 +340,9 @@ public enum Zstd {
                     }
 
                     if code == 0 {
-                        finished = true
+                        if markFinished {
+                            finished = true
+                        }
                         break
                     }
                 }
@@ -260,8 +356,15 @@ public enum Zstd {
             let remaining = maxOutputSize.map { max(0, $0 - produced) }
             Zstd.reserveCapacity(for: &output, additional: min(heuristic, remaining ?? heuristic))
         }
+
+        private func ensureOpen() throws {
+            if finished {
+                throw ZstdError.streamFinished
+            }
+        }
     }
 
+    /// Streaming decompressor that enforces per-frame safety limits. Calls after the end of the frame throw `.streamFinished` until `reset` is invoked.
     public final class Decompressor {
         private let context: OpaquePointer
         private var scratch: [UInt8]
@@ -270,6 +373,7 @@ public enum Zstd {
         private var produced = 0
         private var options: DecompressionOptions
 
+        /// Creates a decompressor configured with the provided options.
         public init(options: DecompressionOptions = DecompressionOptions()) throws {
             guard let context = ZSTD_createDCtx() else {
                 throw ZstdError.library(code: -1, message: "Unable to create decompression context")
@@ -295,12 +399,14 @@ public enum Zstd {
             }
         }
 
+        /// Indicates whether the end of the frame has been reached. When true, further reads throw `.streamFinished` until `reset` is invoked.
         public var isFinished: Bool { finished }
 
         deinit {
             ZSTD_freeDCtx(context)
         }
 
+        /// Resets the stream and reapplies the provided options.
         public func reset(options: DecompressionOptions? = nil) throws {
             let nextOptions = options ?? self.options
             _ = try Zstd.validate(code: Int(ZSTD_DCtx_reset(context, ZSTD_reset_session_and_parameters)))
@@ -314,17 +420,16 @@ public enum Zstd {
             self.produced = 0
         }
 
+        /// Decompresses a buffer and returns the output along with whether the frame is complete.
         public func decompress(_ data: Data) throws -> (Data, finished: Bool) {
-            guard !finished else { return (Data(), true) }
-
             var output = Data()
-            reserveDecompressedCapacity(for: data.count, into: &output)
             let isFinished = try decompress(data, into: &output)
             return (output, isFinished)
         }
 
+        /// Decompresses a buffer, appends it into `output`, and reports whether the frame is complete.
         public func decompress(_ data: Data, into output: inout Data) throws -> Bool {
-            guard !finished else { return true }
+            try ensureOpen()
 
             reserveDecompressedCapacity(for: data.count, into: &output)
             let finished = try decompress(data, writingTo: { buffer in
@@ -334,11 +439,12 @@ public enum Zstd {
             return finished
         }
 
+        /// Decompresses a buffer and forwards output chunks to `sink`, returning whether the frame is complete.
         public func decompress(
             _ data: Data,
             writingTo sink: (UnsafeRawBufferPointer) throws -> Void
         ) throws -> Bool {
-            guard !finished else { return true }
+            try ensureOpen()
 
             try data.withUnsafeBytes { srcBuffer in
                 var input = ZSTD_inBuffer(src: srcBuffer.baseAddress, size: srcBuffer.count, pos: 0)
@@ -379,12 +485,20 @@ public enum Zstd {
             let guess = max(scratch.count, cappedInput * 4)
             Zstd.reserveCapacity(for: &output, additional: min(remaining ?? guess, guess))
         }
+
+        private func ensureOpen() throws {
+            if finished {
+                throw ZstdError.streamFinished
+            }
+        }
     }
 
+    /// Compresses an entire buffer using the provided level and default options.
     public static func compress(_ data: Data, level: Int32 = defaultCompressionLevel) throws -> Data {
         try compress(data, options: CompressionOptions(level: level))
     }
 
+    /// Compresses an entire buffer using the supplied options, enforcing `maxOutputSize` when provided.
     public static func compress(_ data: Data, options: CompressionOptions) throws -> Data {
         let boundSize = try checkedPositiveSize(ZSTD_compressBound(data.count))
         if let limit = options.maxOutputSize {
@@ -420,6 +534,7 @@ public enum Zstd {
     }
 
     @_disfavoredOverload
+    /// Convenience overload for specifying a decompressed size cap without building options.
     public static func decompress(
         _ data: Data,
         maxDecompressedSize: Int? = Zstd.defaultMaxDecompressedSize
@@ -427,6 +542,7 @@ public enum Zstd {
         try decompress(data, options: DecompressionOptions(maxDecompressedSize: maxDecompressedSize))
     }
 
+    /// Decompresses an entire frame while enforcing optional size and window limits (defaults to 16 MB).
     public static func decompress(_ data: Data, options: DecompressionOptions = DecompressionOptions()) throws -> Data {
         guard !data.isEmpty else { throw ZstdError.invalidFrame }
         if let limit = options.maxDecompressedSize, limit <= 0 {
@@ -458,6 +574,7 @@ public enum Zstd {
         return try decompressStreaming(data, options: options)
     }
 
+    /// Streams compression from a `FileHandle`, forwarding chunks to `sink`.
     public static func compressStream(
         from input: FileHandle,
         options: CompressionOptions = CompressionOptions(),
@@ -474,6 +591,7 @@ public enum Zstd {
         try compressor.finish(writingTo: sink)
     }
 
+    /// Streams compression from a `FileHandle` into another file.
     public static func compressStream(
         from input: FileHandle,
         to output: FileHandle,
@@ -485,6 +603,7 @@ public enum Zstd {
         }
     }
 
+    /// Streams decompression from a `FileHandle`, forwarding chunks to `sink` and validating the frame.
     public static func decompressStream(
         from input: FileHandle,
         options: DecompressionOptions = DecompressionOptions(),
@@ -506,6 +625,7 @@ public enum Zstd {
         }
     }
 
+    /// Streams decompression from a `FileHandle` into another file.
     public static func decompressStream(
         from input: FileHandle,
         to output: FileHandle,
@@ -517,6 +637,7 @@ public enum Zstd {
         }
     }
 
+    /// Compresses an async sequence of chunks, emitting compressed frames until `finish()` completes.
     public static func compress<S: AsyncSequence>(
         chunks: S,
         options: CompressionOptions = CompressionOptions()
@@ -558,6 +679,7 @@ public enum Zstd {
         }
     }
 
+    /// Decompresses an async sequence of chunks, enforcing the configured output limit.
     public static func decompress<S: AsyncSequence>(
         chunks: S,
         options: DecompressionOptions = DecompressionOptions()
@@ -603,6 +725,7 @@ public enum Zstd {
         }
     }
 
+    /// Trains a zstd dictionary from example payloads.
     public static func trainDictionary(from samples: [Data], capacity: Int = 8_192) throws -> Data {
         guard !samples.isEmpty else { return Data() }
         guard capacity > 0 else { throw ZstdError.library(code: -1, message: "Dictionary capacity must be positive") }
@@ -641,6 +764,7 @@ public enum Zstd {
         return dictionary
     }
 
+    /// Trains and returns a `Dictionary` ready for streaming or one-shot use.
     public static func trainDictionaryObject(
         from samples: [Data],
         capacity: Int = 8_192,
@@ -817,6 +941,25 @@ public enum Zstd {
     private static func applyCompressionOptions(_ options: CompressionOptions, to context: OpaquePointer) throws {
         _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_compressionLevel, options.level)))
         _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_checksumFlag, options.checksum ? 1 : 0)))
+        if let contentSize = options.contentSize {
+            _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_contentSizeFlag, contentSize ? 1 : 0)))
+        }
+
+        if let longDistanceMatching = options.longDistanceMatching {
+            let mode: Int32 = longDistanceMatching ? 1 : 2 // ZSTD_ps_enable / ZSTD_ps_disable
+            _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_enableLongDistanceMatching, mode)))
+        }
+
+        if let targetLength = options.targetLength {
+            guard let value = Int32(exactly: targetLength) else {
+                throw ZstdError.frameTooLarge
+            }
+            _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_targetLength, value)))
+        }
+
+        if let strategy = options.strategy {
+            _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_strategy, strategy.rawValue)))
+        }
 
         let resolvedIncludeDictionaryID: Bool? = {
             if let include = options.includeDictionaryID {
@@ -838,6 +981,13 @@ public enum Zstd {
 
         if let threads = options.threads {
             _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_nbWorkers, Int32(threads))))
+        }
+
+        if let jobSize = options.jobSize {
+            guard let value = Int32(exactly: jobSize) else {
+                throw ZstdError.frameTooLarge
+            }
+            _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_jobSize, value)))
         }
 
         if let dictionary = options.dictionary {
@@ -862,7 +1012,8 @@ extension Zstd.ZstdError: Equatable {
             return codeA == codeB
         case (.invalidFrame, .invalidFrame),
              (.outputLimitExceeded, .outputLimitExceeded),
-             (.frameTooLarge, .frameTooLarge):
+             (.frameTooLarge, .frameTooLarge),
+             (.streamFinished, .streamFinished):
             return true
         default:
             return false

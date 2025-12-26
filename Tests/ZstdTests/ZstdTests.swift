@@ -97,6 +97,28 @@ import Testing
 }
 
 @MainActor
+@Test func advancedCompressionOptionsRoundTrip() throws {
+    let payload = Data(repeating: 0x5E, count: 10_000)
+    let options = Zstd.CompressionOptions(
+        level: 5,
+        checksum: true,
+        includeDictionaryID: true,
+        contentSize: false,
+        longDistanceMatching: true,
+        targetLength: 64,
+        strategy: .lazy2,
+        threads: 2,
+        jobSize: 64 * 1024,
+        windowLog: 20
+    )
+
+    let compressed = try Zstd.compress(payload, options: options)
+    let decompressed = try Zstd.decompress(compressed, options: .init(maxDecompressedSize: payload.count * 2))
+
+    #expect(decompressed == payload)
+}
+
+@MainActor
 @Test func defaultDecompressLimitAppliesToKnownSizeFrames() throws {
     let targetSize = Zstd.defaultMaxDecompressedSize + 4 * 1024
     let payload = Data(repeating: 0xEF, count: targetSize)
@@ -185,6 +207,30 @@ import Testing
 }
 
 @MainActor
+@Test func streamingFlushKeepsStreamOpen() throws {
+    let payload = Data(repeating: 0x7E, count: 40_000)
+    let first = payload.prefix(22_000)
+    let second = payload.suffix(payload.count - first.count)
+
+    let compressor = try Zstd.Compressor()
+    var compressed = Data()
+    compressed.append(try compressor.compress(first))
+
+    let flushed = try compressor.flush()
+    compressed.append(flushed)
+    #expect(!compressor.isFinished)
+
+    compressed.append(try compressor.compress(second))
+    compressed.append(try compressor.finish())
+
+    let decompressed = try Zstd.decompress(
+        compressed,
+        options: .init(maxDecompressedSize: payload.count * 2)
+    )
+    #expect(decompressed == payload)
+}
+
+@MainActor
 @Test func streamingUnknownSizeLimitIsHonored() async throws {
     let payload = Data(repeating: 0xEF, count: 16_384)
 
@@ -227,6 +273,47 @@ import Testing
     #expect(throws: Zstd.ZstdError.outputLimitExceeded) {
         try compressor.compress(payload, into: &scratch)
         try compressor.finish(into: &scratch)
+    }
+}
+
+@MainActor
+@Test func compressorRejectsUseAfterFinish() throws {
+    let payload = Data(repeating: 0xAA, count: 1_024)
+    let compressor = try Zstd.Compressor()
+
+    _ = try compressor.compress(payload.prefix(512))
+    _ = try compressor.finish()
+    #expect(compressor.isFinished)
+
+    #expect(throws: Zstd.ZstdError.streamFinished) {
+        _ = try compressor.compress(payload.suffix(128))
+    }
+
+    #expect(throws: Zstd.ZstdError.streamFinished) {
+        _ = try compressor.flush()
+    }
+}
+
+@MainActor
+@Test func decompressorRejectsUseAfterFinish() throws {
+    let payload = Data(repeating: 0xC1, count: 2_048)
+    let compressed = try Zstd.compress(payload)
+    let decompressor = try Zstd.Decompressor(options: .init(maxDecompressedSize: payload.count * 2))
+
+    var output = Data()
+    var finished = false
+    for chunk in chunkData(compressed, size: 300) {
+        finished = try decompressor.decompress(chunk, into: &output)
+        if finished {
+            break
+        }
+    }
+
+    #expect(finished)
+    #expect(output == payload)
+
+    #expect(throws: Zstd.ZstdError.streamFinished) {
+        _ = try decompressor.decompress(Data([0x00]), into: &output)
     }
 }
 
@@ -376,6 +463,34 @@ import Testing
 }
 
 @MainActor
+@Test func streamingDictionaryRoundTrip() throws {
+    let training = (0..<10).map { index in
+        Data("dict-\(index)-\(String(repeating: "d", count: index % 4))".utf8)
+    }
+    let dictionary = try Zstd.Dictionary(data: Zstd.trainDictionary(from: training, capacity: 1_600))
+
+    let payload = noiseData(length: 9_000)
+    let compressor = try Zstd.Compressor(options: .init(dictionary: dictionary))
+    var compressed = Data()
+    for chunk in chunkData(payload, size: 1_000) {
+        compressed.append(try compressor.compress(chunk))
+    }
+    compressed.append(try compressor.finish())
+
+    let decompressor = try Zstd.Decompressor(options: .init(dictionary: dictionary, maxDecompressedSize: payload.count * 2))
+    var decompressed = Data()
+    for chunk in chunkData(compressed, size: 850) {
+        let finished = try decompressor.decompress(chunk, into: &decompressed)
+        if finished {
+            break
+        }
+    }
+
+    #expect(decompressed == payload)
+    #expect(decompressor.isFinished)
+}
+
+@MainActor
 @Test func rejectsWrongDictionaryWhenDictionaryIDIncluded() throws {
     let primaryTraining = (0..<16).map { index in
         Data("primary-\(index)-\(String(repeating: "x", count: index % 3))".utf8)
@@ -449,6 +564,33 @@ import Testing
         compressed,
         options: .init(dictionary: primaryDictionary, maxDecompressedSize: payload.count * 2)
     )
+    #expect(decompressed == payload)
+}
+
+@MainActor
+@Test func asyncDictionaryRoundTrip() async throws {
+    let training = (0..<14).map { index in
+        Data("async-\(index)-\(String(repeating: "q", count: index % 3))".utf8)
+    }
+    let dictionary = try Zstd.Dictionary(data: Zstd.trainDictionary(from: training, capacity: 1_500))
+
+    let payload = Data(repeating: 0x77, count: 6_000)
+    var compressed = Data()
+    for try await chunk in Zstd.compress(
+        chunks: asyncChunks(payload, size: 750),
+        options: .init(dictionary: dictionary)
+    ) {
+        compressed.append(chunk)
+    }
+
+    var decompressed = Data()
+    for try await chunk in Zstd.decompress(
+        chunks: asyncChunks(compressed, size: 420),
+        options: .init(dictionary: dictionary, maxDecompressedSize: payload.count * 2)
+    ) {
+        decompressed.append(chunk)
+    }
+
     #expect(decompressed == payload)
 }
 
