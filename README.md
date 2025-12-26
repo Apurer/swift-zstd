@@ -34,6 +34,7 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
   try Zstd.compressStream(from: inputHandle, to: compressedHandle, options: .init(windowLog: 20))
   try Zstd.decompressStream(from: compressedHandle, to: outputHandle, options: .init(maxDecompressedSize: 50_000_000))
   ```
+  Use the `writingTo:` overloads if you want to stream bytes directly from the scratch buffer into your own sink without building `Data` chunks in between.
 - **AsyncSequence streaming**  
   ```swift
   let compressedStream = Zstd.compress(chunks: sourceChunks)
@@ -54,6 +55,7 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
 ## Tuning & safety
 - Options expose checksum, window log, worker threads, `includeDictionaryID` (ZSTD_c_dictIDFlag), and `maxWindowLog` for decompression. Multi-threaded compression is compiled in; set `threads` > 0 to enable worker threads.
 - `maxOutputSize` (compression) and `maxDecompressedSize` (decompression) guard untrusted or enormous inputs; overshoots throw `outputLimitExceeded`. Decompression defaults to a 16MB cap; pass `maxDecompressedSize: nil` (or a larger value) if you trust the payload and need more, or cap the sliding window with `maxWindowLog` for untrusted streams.
+- Known-size frames are decompressed eagerly up to 64MB; larger advertised sizes fall back to the streaming path to avoid a single huge allocation even when the frame reports its size.
 - Allocations are bounded using `ZSTD_compressBound`/`ZSTD_*StreamOutSize` with explicit `Int.max` checks before buffers are created.
 - Empty frames round-trip correctly; invalid or truncated frames throw `invalidFrame`.
 - Prefer streaming APIs for large payloads to reuse contexts and avoid building whole messages in memory.

@@ -219,6 +219,102 @@ import Testing
 }
 
 @MainActor
+@Test func streamingCompressorTracksOutputLimit() throws {
+    let payload = noiseData(length: 1_024)
+    let compressor = try Zstd.Compressor(options: .init(maxOutputSize: 64))
+    var scratch = Data()
+
+    #expect(throws: Zstd.ZstdError.outputLimitExceeded) {
+        try compressor.compress(payload, into: &scratch)
+        try compressor.finish(into: &scratch)
+    }
+}
+
+@MainActor
+@Test func streamingDecompressorTracksLimitAcrossChunks() throws {
+    let payload = noiseData(length: 1_200)
+    let compressed = try Zstd.compress(payload)
+    let decompressor = try Zstd.Decompressor(options: .init(maxDecompressedSize: 800))
+    var output = Data()
+    var hitLimit = false
+
+    do {
+        for chunk in chunkData(compressed, size: 96) {
+            _ = try decompressor.decompress(chunk, into: &output)
+        }
+    } catch let error as Zstd.ZstdError {
+        if case .outputLimitExceeded = error {
+            hitLimit = true
+        } else {
+            throw error
+        }
+    }
+
+    #expect(hitLimit)
+}
+
+@MainActor
+@Test func compressorResetRebindsOptions() throws {
+    let payload = noiseData(length: 240)
+    let referenceSize = try Zstd.compress(payload).count
+    let relaxedLimit = referenceSize * 2
+    let tightLimit = max(1, referenceSize / 2)
+
+    let compressor = try Zstd.Compressor(options: .init(maxOutputSize: relaxedLimit))
+    var buffer = Data()
+
+    try compressor.compress(payload, into: &buffer)
+    try compressor.finish(into: &buffer)
+
+    try compressor.reset(options: .init(maxOutputSize: tightLimit))
+    buffer.removeAll(keepingCapacity: true)
+    #expect(throws: Zstd.ZstdError.outputLimitExceeded) {
+        try compressor.compress(payload, into: &buffer)
+        try compressor.finish(into: &buffer)
+    }
+
+    try compressor.reset(options: .init(maxOutputSize: relaxedLimit))
+    buffer.removeAll(keepingCapacity: true)
+    try compressor.compress(payload, into: &buffer)
+    try compressor.finish(into: &buffer)
+    #expect(!buffer.isEmpty)
+}
+
+@MainActor
+@Test func decompressorResetRestoresLimits() throws {
+    let payload = noiseData(length: 720)
+    let compressed = try Zstd.compress(payload)
+    let decompressor = try Zstd.Decompressor(options: .init(maxDecompressedSize: 1_000))
+
+    var output = Data()
+    for chunk in chunkData(compressed, size: 150) {
+        let finished = try decompressor.decompress(chunk, into: &output)
+        if finished {
+            break
+        }
+    }
+    #expect(output == payload)
+
+    try decompressor.reset(options: .init(maxDecompressedSize: 400))
+    output.removeAll(keepingCapacity: true)
+    #expect(throws: Zstd.ZstdError.outputLimitExceeded) {
+        for chunk in chunkData(compressed, size: 150) {
+            _ = try decompressor.decompress(chunk, into: &output)
+        }
+    }
+
+    try decompressor.reset(options: .init(maxDecompressedSize: 1_000))
+    output.removeAll(keepingCapacity: true)
+    for chunk in chunkData(compressed, size: 150) {
+        let finished = try decompressor.decompress(chunk, into: &output)
+        if finished {
+            break
+        }
+    }
+    #expect(output == payload)
+}
+
+@MainActor
 @Test func incrementalDecompressorHandlesChunks() throws {
     let payload = Data((0..<20_000).map { UInt8($0 & 0x7F) })
     let compressed = try Zstd.compress(payload)
@@ -508,6 +604,20 @@ private actor StreamTracker {
     func snapshot() -> (produced: Int, cancelled: Bool) {
         (produced, cancelled)
     }
+}
+
+private func noiseData(length: Int) -> Data {
+    guard length > 0 else { return Data() }
+    var state: UInt64 = 0x1234_5678_9ABC_DEF0
+    var bytes: [UInt8] = []
+    bytes.reserveCapacity(length)
+
+    for _ in 0..<length {
+        state = state &* 2862933555777941757 &+ 3037000493
+        bytes.append(UInt8(truncatingIfNeeded: state >> 24))
+    }
+
+    return Data(bytes)
 }
 
 private func chunkData(_ data: Data, size: Int) -> [Data] {
