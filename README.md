@@ -12,13 +12,21 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
   ```swift
   let compressor = try Zstd.Compressor(options: .init(level: 5, threads: 2, checksum: true))
   var output = Data()
-  for chunk in someChunks { output.append(try compressor.compress(chunk)) }
-  output.append(try compressor.finish())
+  var scratch = Data()
+  for chunk in someChunks {
+      scratch.removeAll(keepingCapacity: true)
+      try compressor.compress(chunk, into: &scratch)
+      output.append(scratch)
+  }
+  scratch.removeAll(keepingCapacity: true)
+  try compressor.finish(into: &scratch)
+  output.append(scratch)
 
   let decompressor = try Zstd.Decompressor(options: .init(maxDecompressedSize: 1 << 24))
+  var restored = Data()
   for chunk in outputChunks {
-      let (partial, finished) = try decompressor.decompress(chunk)
-      // consume partial; stop when finished is true
+      let finished = try decompressor.decompress(chunk, into: &restored)
+      if finished { break }
   }
   ```
 - **FileHandle streaming**  
@@ -44,8 +52,8 @@ Swift package that embeds the Zstandard C library and exposes small, allocation-
   ```
 
 ## Tuning & safety
-- Options expose checksum, window log, worker threads, and `includeDictionaryID` (ZSTD_c_dictIDFlag). Multi-threaded compression is compiled in; set `threads` > 0 to enable worker threads.
-- `maxOutputSize` (compression) and `maxDecompressedSize` (decompression) guard untrusted or enormous inputs; overshoots throw `outputLimitExceeded`. Decompression defaults to a 64MB cap; pass `maxDecompressedSize: nil` (or a larger value) if you trust the payload and need more.
+- Options expose checksum, window log, worker threads, `includeDictionaryID` (ZSTD_c_dictIDFlag), and `maxWindowLog` for decompression. Multi-threaded compression is compiled in; set `threads` > 0 to enable worker threads.
+- `maxOutputSize` (compression) and `maxDecompressedSize` (decompression) guard untrusted or enormous inputs; overshoots throw `outputLimitExceeded`. Decompression defaults to a 16MB cap; pass `maxDecompressedSize: nil` (or a larger value) if you trust the payload and need more, or cap the sliding window with `maxWindowLog` for untrusted streams.
 - Allocations are bounded using `ZSTD_compressBound`/`ZSTD_*StreamOutSize` with explicit `Int.max` checks before buffers are created.
 - Empty frames round-trip correctly; invalid or truncated frames throw `invalidFrame`.
 - Prefer streaming APIs for large payloads to reuse contexts and avoid building whole messages in memory.

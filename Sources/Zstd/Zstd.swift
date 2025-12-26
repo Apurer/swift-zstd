@@ -3,7 +3,7 @@ import CZstd
 
 public enum Zstd {
     public static let defaultCompressionLevel: Int32 = Int32(ZSTD_CLEVEL_DEFAULT)
-    public static let defaultMaxDecompressedSize: Int = 64 * 1024 * 1024
+    public static let defaultMaxDecompressedSize: Int = 16 * 1024 * 1024
 
     public struct CompressionOptions: Sendable {
         public var level: Int32
@@ -36,13 +36,16 @@ public enum Zstd {
     public struct DecompressionOptions: Sendable {
         public var dictionary: Dictionary?
         public var maxDecompressedSize: Int?
+        public var maxWindowLog: Int?
 
         public init(
             dictionary: Dictionary? = nil,
-            maxDecompressedSize: Int? = Zstd.defaultMaxDecompressedSize
+            maxDecompressedSize: Int? = Zstd.defaultMaxDecompressedSize,
+            maxWindowLog: Int? = nil
         ) {
             self.dictionary = dictionary
             self.maxDecompressedSize = maxDecompressedSize
+            self.maxWindowLog = maxWindowLog
         }
     }
 
@@ -154,6 +157,15 @@ public enum Zstd {
             guard !finished else { return Data() }
 
             var output = Data()
+            reserveCompressedCapacity(for: data.count, into: &output)
+            try compress(data, into: &output)
+            return output
+        }
+
+        public func compress(_ data: Data, into output: inout Data) throws {
+            guard !finished else { return }
+
+            reserveCompressedCapacity(for: data.count, into: &output)
             try data.withUnsafeBytes { srcBuffer in
                 var input = ZSTD_inBuffer(src: srcBuffer.baseAddress, size: srcBuffer.count, pos: 0)
                 try scratch.withUnsafeMutableBytes { scratchBuffer in
@@ -178,13 +190,21 @@ public enum Zstd {
                 }
             }
 
-            return output
         }
 
         public func finish() throws -> Data {
             guard !finished else { return Data() }
 
             var output = Data()
+            Zstd.reserveCapacity(for: &output, additional: scratch.count)
+            try finish(into: &output)
+            return output
+        }
+
+        public func finish(into output: inout Data) throws {
+            guard !finished else { return }
+
+            Zstd.reserveCapacity(for: &output, additional: scratch.count)
             var input = ZSTD_inBuffer(src: nil, size: 0, pos: 0)
 
             try scratch.withUnsafeMutableBytes { scratchBuffer in
@@ -212,8 +232,14 @@ public enum Zstd {
                     }
                 }
             }
+        }
 
-            return output
+        private func reserveCompressedCapacity(for inputSize: Int, into output: inout Data) {
+            let paddedInput = min(inputSize, Int.max - scratch.count)
+            let estimatedBound = max(1, Int(ZSTD_compressBound(inputSize)))
+            let heuristic = max(scratch.count, min(estimatedBound, paddedInput + scratch.count))
+            let remaining = maxOutputSize.map { max(0, $0 - produced) }
+            Zstd.reserveCapacity(for: &output, additional: min(heuristic, remaining ?? heuristic))
         }
     }
 
@@ -243,7 +269,7 @@ public enum Zstd {
             )
 
             do {
-                try Zstd.apply(dictionary: options.dictionary, to: context)
+                try Zstd.applyDecompressionOptions(options, to: context)
             } catch {
                 ZSTD_freeDCtx(context)
                 throw error
@@ -259,7 +285,7 @@ public enum Zstd {
         public func reset(options: DecompressionOptions? = nil) throws {
             let nextOptions = options ?? self.options
             _ = try Zstd.validate(code: Int(ZSTD_DCtx_reset(context, ZSTD_reset_session_and_parameters)))
-            try Zstd.apply(dictionary: nextOptions.dictionary, to: context)
+            try Zstd.applyDecompressionOptions(nextOptions, to: context)
             self.limit = nextOptions.maxDecompressedSize
             self.options = nextOptions
             if let limit = limit, limit <= 0 {
@@ -273,6 +299,15 @@ public enum Zstd {
             guard !finished else { return (Data(), true) }
 
             var output = Data()
+            reserveDecompressedCapacity(for: data.count, into: &output)
+            let isFinished = try decompress(data, into: &output)
+            return (output, isFinished)
+        }
+
+        public func decompress(_ data: Data, into output: inout Data) throws -> Bool {
+            guard !finished else { return true }
+
+            reserveDecompressedCapacity(for: data.count, into: &output)
             try data.withUnsafeBytes { srcBuffer in
                 var input = ZSTD_inBuffer(src: srcBuffer.baseAddress, size: srcBuffer.count, pos: 0)
 
@@ -303,7 +338,14 @@ public enum Zstd {
                 }
             }
 
-            return (output, finished)
+            return finished
+        }
+
+        private func reserveDecompressedCapacity(for inputSize: Int, into output: inout Data) {
+            let remaining = limit.map { max(0, $0 - produced) }
+            let cappedInput = min(inputSize, Int.max / 4)
+            let guess = max(scratch.count, cappedInput * 4)
+            Zstd.reserveCapacity(for: &output, additional: min(remaining ?? guess, guess))
         }
     }
 
@@ -346,7 +388,10 @@ public enum Zstd {
     }
 
     @_disfavoredOverload
-    public static func decompress(_ data: Data, maxDecompressedSize: Int? = nil) throws -> Data {
+    public static func decompress(
+        _ data: Data,
+        maxDecompressedSize: Int? = Zstd.defaultMaxDecompressedSize
+    ) throws -> Data {
         try decompress(data, options: DecompressionOptions(maxDecompressedSize: maxDecompressedSize))
     }
 
@@ -384,17 +429,22 @@ public enum Zstd {
     ) throws {
         let readSize = try checkedPositiveSize(chunkSize)
         let compressor = try Compressor(options: options)
+        let reserveSize = readSize <= Int.max / 2 ? readSize * 2 : Int.max
+        var compressed = Data()
+        reserveCapacity(for: &compressed, additional: reserveSize)
 
         while let chunk = try input.read(upToCount: readSize), !chunk.isEmpty {
-            let compressed = try compressor.compress(chunk)
+            compressed.removeAll(keepingCapacity: true)
+            try compressor.compress(chunk, into: &compressed)
             if !compressed.isEmpty {
                 try output.write(contentsOf: compressed)
             }
         }
 
-        let tail = try compressor.finish()
-        if !tail.isEmpty {
-            try output.write(contentsOf: tail)
+        compressed.removeAll(keepingCapacity: true)
+        try compressor.finish(into: &compressed)
+        if !compressed.isEmpty {
+            try output.write(contentsOf: compressed)
         }
     }
 
@@ -406,9 +456,14 @@ public enum Zstd {
     ) throws {
         let readSize = try checkedPositiveSize(chunkSize)
         let decompressor = try Decompressor(options: options)
+        var partial = Data()
+        let reserveSize = readSize <= Int.max / 3 ? readSize * 3 : Int.max
+        let cappedReserve = options.maxDecompressedSize.map { min($0, reserveSize) } ?? reserveSize
+        reserveCapacity(for: &partial, additional: cappedReserve)
 
         while let chunk = try input.read(upToCount: readSize), !chunk.isEmpty {
-            let (partial, finished) = try decompressor.decompress(chunk)
+            partial.removeAll(keepingCapacity: true)
+            let finished = try decompressor.decompress(chunk, into: &partial)
             if !partial.isEmpty {
                 try output.write(contentsOf: partial)
             }
@@ -561,7 +616,7 @@ public enum Zstd {
         }
         defer { ZSTD_freeDCtx(context) }
 
-        try apply(dictionary: options.dictionary, to: context)
+        try applyDecompressionOptions(options, to: context)
 
         var output = Data(count: expectedSize)
         let written = output.withUnsafeMutableBytes { dstBuffer -> Int in
@@ -581,10 +636,13 @@ public enum Zstd {
         }
         defer { ZSTD_freeDCtx(context) }
 
-        try apply(dictionary: options.dictionary, to: context)
+        try applyDecompressionOptions(options, to: context)
 
         let chunkSize = try checkedChunkSize(Int(ZSTD_DStreamOutSize()))
         var output = Data()
+        let streamingReserve = chunkSize <= Int.max / 2 ? chunkSize * 2 : Int.max
+        let cappedStreamingReserve = options.maxDecompressedSize.map { min($0, streamingReserve) } ?? streamingReserve
+        reserveCapacity(for: &output, additional: cappedStreamingReserve)
         var lastResult = 0
 
         try data.withUnsafeBytes { srcBuffer in
@@ -680,6 +738,27 @@ public enum Zstd {
     private static func checkedChunkSize(_ value: Int) throws -> Int {
         let checked = try checkedPositiveSize(value)
         return max(64, checked)
+    }
+
+    @inline(__always)
+    private static func reserveCapacity(for output: inout Data, additional: Int) {
+        guard additional > 0 else { return }
+        let target = output.count > Int.max - additional ? Int.max : output.count + additional
+        output.reserveCapacity(target)
+    }
+
+    @inline(__always)
+    private static func applyDecompressionOptions(_ options: DecompressionOptions, to context: OpaquePointer) throws {
+        try apply(dictionary: options.dictionary, to: context)
+
+        if let maxWindowLog = options.maxWindowLog {
+            let minLog = 10
+            let maxLog = MemoryLayout<Int>.size == 4 ? 30 : 31
+            if maxWindowLog < minLog || maxWindowLog > maxLog {
+                throw ZstdError.outputLimitExceeded
+            }
+            _ = try validate(code: Int(ZSTD_DCtx_setParameter(context, ZSTD_d_windowLogMax, Int32(maxWindowLog))))
+        }
     }
 
     @inline(__always)
