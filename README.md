@@ -2,6 +2,10 @@
 
 Swift package that embeds the Zstandard C library and exposes small, allocation-aware APIs for compressing and decompressing data, streams, and async sequences.
 
+## Requirements
+- Swift 6.2 or newer
+- macOS 13+, iOS 15+, tvOS 15+, watchOS 9+
+
 ## Usage
 - **One-shot**  
   ```swift

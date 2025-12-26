@@ -143,6 +143,12 @@ public enum Zstd {
             }
 
             guard let compressHandle, let decompressHandle else {
+                if let compressHandle {
+                    ZSTD_freeCDict(compressHandle)
+                }
+                if let decompressHandle {
+                    ZSTD_freeDDict(decompressHandle)
+                }
                 throw ZstdError.library(code: -1, message: "Unable to create zstd dictionary")
             }
 
