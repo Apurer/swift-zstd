@@ -97,8 +97,8 @@ git submodule update --init --recursive
 
 ## Development
 - Run the test suite: `swift test --parallel`.
-- Lint formatting: `swift format lint --configuration swift-format.json Sources Tests Benchmarks`.
-- Fix formatting: `swift format --in-place --configuration swift-format.json Sources Tests Benchmarks`.
+- Lint formatting: `swift format lint --recursive --configuration swift-format.json Sources Tests Benchmarks`.
+- Fix formatting: `swift format --in-place --recursive --configuration swift-format.json Sources Tests Benchmarks`.
 - Benchmarks: `swift run Benchmarks` (see above).
 - Contributing guide: [`CONTRIBUTING.md`](CONTRIBUTING.md); Code of Conduct: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md); Security: [`SECURITY.md`](SECURITY.md).
 - License: BSD 3-Clause (see `LICENSE`).

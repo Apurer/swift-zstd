@@ -19,8 +19,8 @@ Thanks for helping improve swift-zstd! This guide explains how to propose change
 
 ### Formatting
 - Configure once: `swift format --help` (tool is bundled with Swift 6 toolchains).
-- Lint locally: `swift format lint --configuration swift-format.json Sources Tests`.
-- Fix in place: `swift format --in-place --configuration swift-format.json Sources Tests`.
+- Lint locally: `swift format lint --recursive --configuration swift-format.json Sources Tests Benchmarks`.
+- Fix in place: `swift format --in-place --recursive --configuration swift-format.json Sources Tests Benchmarks`.
 
 ### Tests
 - Run unit tests: `swift test --parallel`.
