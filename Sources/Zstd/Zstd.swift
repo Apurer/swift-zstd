@@ -818,7 +818,17 @@ public enum Zstd {
         _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_compressionLevel, options.level)))
         _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_checksumFlag, options.checksum ? 1 : 0)))
 
-        if let includeDictionaryID = options.includeDictionaryID {
+        let resolvedIncludeDictionaryID: Bool? = {
+            if let include = options.includeDictionaryID {
+                return include
+            }
+            if options.dictionary != nil {
+                return true
+            }
+            return nil
+        }()
+
+        if let includeDictionaryID = resolvedIncludeDictionaryID {
             _ = try validate(code: Int(ZSTD_CCtx_setParameter(context, ZSTD_c_dictIDFlag, includeDictionaryID ? 1 : 0)))
         }
 

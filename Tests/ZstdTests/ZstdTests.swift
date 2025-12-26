@@ -418,6 +418,41 @@ import Testing
 }
 
 @MainActor
+@Test func defaultsIncludeDictionaryIDWhenDictionaryProvided() throws {
+    let primaryTraining = (0..<10).map { index in
+        Data("p-\(index)-\(String(repeating: "p", count: index % 4))".utf8)
+    }
+    let secondaryTraining = (0..<10).map { index in
+        Data("s-\(index)-\(String(repeating: "s", count: index % 5))".utf8)
+    }
+
+    let primaryDictionary = try Zstd.Dictionary(data: Zstd.trainDictionary(from: primaryTraining, capacity: 1_024))
+    let secondaryDictionary = try Zstd.Dictionary(data: Zstd.trainDictionary(from: secondaryTraining, capacity: 1_024))
+
+    let payload = Data(repeating: 0x4D, count: 8_000)
+    let compressed = try Zstd.compress(payload, options: .init(dictionary: primaryDictionary))
+
+    var rejectedWrongDictionary = false
+    do {
+        _ = try Zstd.decompress(
+            compressed,
+            options: .init(dictionary: secondaryDictionary, maxDecompressedSize: payload.count * 2)
+        )
+    } catch let error as Zstd.ZstdError {
+        if case .library = error {
+            rejectedWrongDictionary = true
+        }
+    } catch {}
+    #expect(rejectedWrongDictionary)
+
+    let decompressed = try Zstd.decompress(
+        compressed,
+        options: .init(dictionary: primaryDictionary, maxDecompressedSize: payload.count * 2)
+    )
+    #expect(decompressed == payload)
+}
+
+@MainActor
 @Test func fileHandleStreamingRoundTrip() throws {
     let payload = Data((0..<25_000).map { UInt8($0 % 199) })
     let inputURL = uniqueTempURL(".input")
